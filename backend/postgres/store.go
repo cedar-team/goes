@@ -47,6 +47,14 @@ type EventStore struct {
 // EventStoreOption is an optionn for the PostgreSQL event store.
 type EventStoreOption func(*EventStore)
 
+// Pool returns an EventStoreOption that sets the pool to an existing pgxpool.Pool.
+// The provided pool must already be connected to the PostgreSQL server.
+func Pool(pool *pgxpool.Pool) EventStoreOption {
+	return func(store *EventStore) {
+		store.pool = pool
+	}
+}
+
 // URL returns an EventStoreOption that specifies the connection string to the
 // PostgreSQL server.
 func URL(url string) EventStoreOption {
@@ -115,15 +123,22 @@ func (store *EventStore) connectOnce(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 
-		if err = store.connect(ctx); err != nil {
-			return
+		if store.pool == nil {
+			if err = store.connect(ctx); err != nil {
+				return
+			}
+
+			if err = store.createDatabase(ctx); err != nil {
+				return
+			}
+
+			if err = store.useDatabase(ctx); err != nil {
+				return
+			}
 		}
 
-		if err = store.createDatabase(ctx); err != nil {
-			return
-		}
-
-		if err = store.useDatabase(ctx); err != nil {
+		if err = store.pool.Ping(ctx); err != nil {
+			err = fmt.Errorf("ping: %w", err)
 			return
 		}
 
@@ -201,10 +216,6 @@ func (store *EventStore) useDatabase(ctx context.Context) error {
 		return fmt.Errorf("connect to postgres: %w [url=%s]", err, cfg.ConnString())
 	}
 	store.pool = pool
-
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("ping: %w", err)
-	}
 
 	return nil
 }
